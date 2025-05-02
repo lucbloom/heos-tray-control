@@ -150,7 +150,7 @@ void SendHeosCommand(const std::string& command, const std::string& params = "",
 		{
 			callback(out);
 		}
-	}).detach();
+		}).detach();
 }
 
 //bool SendHttpRequest(const std::string & command, const std::string& params = "") {
@@ -451,20 +451,20 @@ void ShowButtonToolbar()
 {
 	if (hwndToolbar != NULL)
 		return; // Already shown
-	
+
 	RECT workArea;
 	SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
-	
+
 	hwndToolbar = CreateWindowEx(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"STATIC", NULL,
 		WS_POPUP | WS_VISIBLE,
-		workArea.right - BUTTON_SIZE * BUTTON_COUNT - MARGIN, workArea.bottom - BUTTON_SIZE - MARGIN, 
+		workArea.right - BUTTON_SIZE * BUTTON_COUNT - MARGIN, workArea.bottom - BUTTON_SIZE - MARGIN,
 		BUTTON_SIZE * BUTTON_COUNT, BUTTON_SIZE,
 		NULL, NULL, hInst, NULL);
-	
+
 	HWND buttons[BUTTON_COUNT];
 	int ids[] = { ID_BUTTON_PLAY, ID_BUTTON_PAUSE, ID_BUTTON_MUTE, ID_BUTTON_VOL_DOWN, ID_BUTTON_VOL_UP, ID_BUTTON_OPTICAL };
 	//LPCWSTR icons[] = { L"play.ico", L"pause.ico", L"mute.ico", L"voldown.ico", L"volup.ico", L"optical.ico" };
-	
+
 	for (int i = 0; i < BUTTON_COUNT; ++i) {
 		int iconID = ids[i] - ID_BUTTON_PLAY + IDI_BUTTON_PLAY;
 		//HICON hIcon = LoadButtonIcon(icons[i]);
@@ -475,14 +475,14 @@ void ShowButtonToolbar()
 			hwndToolbar, (HMENU)(INT_PTR)ids[i], hInst, NULL);
 		SendMessage(buttons[i], BM_SETIMAGE, IMAGE_ICON, (LPARAM)hIcon);
 	}
-	
+
 	ShowWindow(hwndToolbar, SW_SHOWNOACTIVATE);
 	SetForegroundWindow(hwndToolbar);
 	SetFocus(hwndToolbar);
-	
+
 	// Track whether we're processing a button click
 	static bool processingButtonClick = false;
-	
+
 	// Auto-hide on focus loss, but not when clicking buttons
 	SetWindowLongPtr(hwndToolbar, GWLP_WNDPROC, (LONG_PTR)+[](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> LRESULT {
 		switch (msg) {
@@ -490,21 +490,21 @@ void ShowButtonToolbar()
 			// Set flag when processing button clicks
 			processingButtonClick = true;
 			break;
-			
+
 		case WM_ACTIVATE:
 			if (LOWORD(wParam) == WA_INACTIVE)
 			{
 				// Check if we're just clicking a button in our toolbar
 				HWND hwndFocus = GetFocus();
 				HWND hwndActive = (HWND)lParam;
-				
+
 				// If we're processing a button click or the active window is one of our buttons, don't close
 				if (processingButtonClick || IsChild(hwnd, hwndActive))
 				{
 					processingButtonClick = false;
 					return 0;
 				}
-				
+
 				// Otherwise close the toolbar
 				ShowWindow(hwndToolbar, SW_HIDE);
 				DestroyWindow(hwndToolbar);
@@ -515,7 +515,7 @@ void ShowButtonToolbar()
 		}
 		processingButtonClick = false;
 		return WndProc(hwnd, msg, wParam, lParam);
-	});
+		});
 }
 
 void ValidateConnection()
@@ -551,70 +551,103 @@ void ValidateConnection()
 		}
 		std::ofstream out(PREFS_FILE);
 		out << root;
-	}).detach();
+		}).detach();
 }
+
+static UINT_PTR clickTimerID = 0;
+static bool waitingForDoubleClick = false;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg) {
-		case WM_TRAYICON:
-			switch (lParam) {
-			case WM_LBUTTONUP:
-				ShowButtonToolbar();
-				break;
-			case WM_RBUTTONUP:
-			{
-				POINT pt;
-				GetCursorPos(&pt);
-				ShowContextMenu(hwnd, pt);
-				break;
-			}
+	case WM_TRAYICON:
+		switch (lParam) {
+		case WM_LBUTTONDOWN:
+			if (!waitingForDoubleClick) {
+				waitingForDoubleClick = true;
+				auto dblClickTime = 100;//GetDoubleClickTime(); // 100 because the default is 500 and that is just too long.
+				clickTimerID = SetTimer(hwnd, 1, 100, NULL);
 			}
 			break;
 
-		case WM_COMMAND:
-			switch (LOWORD(wParam)) {
-				case ID_TRAY_EXIT:
-					PostQuitMessage(0);
-					break;
-				case ID_TRAY_CONNECT:
-					ValidateConnection();
-					break;
-				case ID_BUTTON_PLAY:
-					SendHeosCommand("set_play_state", "state=play");
-					break;
-				case ID_BUTTON_PAUSE:
-					SendHeosCommand("set_play_state", "state=pause");
-					break;
-				case ID_BUTTON_MUTE:
-				{
-					SendHeosCommand("get_mute", "", [](const std::string& response) {
-						bool isMuted = response.find("state=on") != std::string::npos;
-						SendHeosCommand("set_mute", isMuted ? "state=off" : "state=on");
-						});
-					break;
-				}
-				case ID_BUTTON_VOL_DOWN:
-					SendHeosCommand("volume_down");
-					break;
-				case ID_BUTTON_VOL_UP:
-					SendHeosCommand("volume_up");
-					break;
-				case ID_BUTTON_OPTICAL:
-					SendHeosCommand("play_input", "input=optical_in_1");
-					break;
+		case WM_LBUTTONDBLCLK:
+			if (clickTimerID) {
+				KillTimer(hwnd, clickTimerID);
+				clickTimerID = 0;
 			}
+			waitingForDoubleClick = false;
+
+			SendHeosCommand("get_play_state", "", [](const std::string& response) {
+				bool isPlaying = response.find("state=play") != std::string::npos;
+				SendHeosCommand("set_play_state", isPlaying ? "state=pause" : "state=play");
+				});
 			break;
 
-		case WM_DESTROY:
-			if (hwnd == hwndMain)
-			{
-				PostQuitMessage(0);
-			}
+		case WM_RBUTTONUP:
+		{
+			POINT pt;
+			GetCursorPos(&pt);
+			ShowContextMenu(hwnd, pt);
 			break;
+		}
+		}
+		break;
 
-		default:
-			return DefWindowProc(hwnd, msg, wParam, lParam);
+	case WM_TIMER:
+		if (wParam == clickTimerID) {
+			// Timer expired without a double-click, so process as single click
+			KillTimer(hwnd, clickTimerID);
+			clickTimerID = 0;
+			waitingForDoubleClick = false;
+
+			// Now it's safe to show the toolbar
+			ShowButtonToolbar();
+		}
+		break;
+
+	case WM_COMMAND:
+		switch (LOWORD(wParam)) {
+		case ID_TRAY_EXIT:
+			PostQuitMessage(0);
+			break;
+		case ID_TRAY_CONNECT:
+			ValidateConnection();
+			break;
+		case ID_BUTTON_PLAY:
+			SendHeosCommand("set_play_state", "state=play");
+			break;
+		case ID_BUTTON_PAUSE:
+			SendHeosCommand("set_play_state", "state=pause");
+			break;
+		case ID_BUTTON_MUTE:
+		{
+			SendHeosCommand("get_mute", "", [](const std::string& response) {
+				bool isMuted = response.find("state=on") != std::string::npos;
+				SendHeosCommand("set_mute", isMuted ? "state=off" : "state=on");
+				});
+			break;
+		}
+		case ID_BUTTON_VOL_DOWN:
+			SendHeosCommand("volume_down");
+			break;
+		case ID_BUTTON_VOL_UP:
+			SendHeosCommand("volume_up");
+			break;
+		case ID_BUTTON_OPTICAL:
+			SendHeosCommand("play_input", "input=optical_in_1");
+			break;
+		}
+		break;
+
+	case WM_DESTROY:
+		if (hwnd == hwndMain)
+		{
+			PostQuitMessage(0);
+		}
+		break;
+
+	default:
+		return DefWindowProc(hwnd, msg, wParam, lParam);
 	}
 	return 0;
 }
