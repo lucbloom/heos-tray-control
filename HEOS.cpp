@@ -554,6 +554,14 @@ void ValidateConnection()
 		}).detach();
 }
 
+void ToggleMute()
+{
+	SendHeosCommand("get_mute", "", [](const std::string& response) {
+		bool isMuted = response.find("state=on") != std::string::npos;
+		SendHeosCommand("set_mute", isMuted ? "state=off" : "state=on");
+		});
+}
+
 static UINT_PTR clickTimerID = 0;
 static bool waitingForDoubleClick = false;
 
@@ -577,10 +585,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 			waitingForDoubleClick = false;
 
-			SendHeosCommand("get_play_state", "", [](const std::string& response) {
-				bool isPlaying = response.find("state=play") != std::string::npos;
-				SendHeosCommand("set_play_state", isPlaying ? "state=pause" : "state=play");
-				});
+			ToggleMute();
+			//SendHeosCommand("get_play_state", "", [](const std::string& response) {
+			//	bool isPlaying = response.find("state=play") != std::string::npos;
+			//	SendHeosCommand("set_play_state", isPlaying ? "state=pause" : "state=play");
+			//	});
 			break;
 
 		case WM_RBUTTONUP:
@@ -620,13 +629,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			SendHeosCommand("set_play_state", "state=pause");
 			break;
 		case ID_BUTTON_MUTE:
-		{
-			SendHeosCommand("get_mute", "", [](const std::string& response) {
-				bool isMuted = response.find("state=on") != std::string::npos;
-				SendHeosCommand("set_mute", isMuted ? "state=off" : "state=on");
-				});
+			ToggleMute();
 			break;
-		}
 		case ID_BUTTON_VOL_DOWN:
 			SendHeosCommand("volume_down");
 			break;
