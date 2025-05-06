@@ -10,6 +10,11 @@ Now with persistent preference storage and background validation of device conne
 #include <shellapi.h>
 #include <commctrl.h>
 //#include <wininet.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <objbase.h>
+#include <strsafe.h>
+#include <Shlwapi.h>
 
 #include <string>
 #include <iostream>
@@ -24,23 +29,28 @@ Now with persistent preference storage and background validation of device conne
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "Shlwapi.lib")
 
 #include "Resource.h"
 
+#define TRAY_ICON_UID 1
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
 #define ID_TRAY_CONNECT 1002
 #define ID_TRAY_DEVICE_INFO 1003
+#define ID_TRAY_STARTUP 1004
 #define ID_BUTTON_PLAY 2001
 #define ID_BUTTON_PAUSE 2002
 #define ID_BUTTON_MUTE 2003
 #define ID_BUTTON_VOL_DOWN 2004
 #define ID_BUTTON_VOL_UP 2005
 #define ID_BUTTON_OPTICAL 2006
+#define TRAY_ICON_TOOLTIP L"HEOS Controller"
 
 HINSTANCE hInst;
 HWND hwndMain;
 HWND hwndToolbar = NULL;
+NOTIFYICONDATA nid;
 bool isConnected = false;
 std::string deviceName = "Not connected";
 std::string deviceIP = "";
@@ -52,6 +62,7 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void ShowContextMenu(HWND, POINT);
 void ShowButtonToolbar();
 void ValidateConnection();
+void SlackMonitorLoop();
 
 // Custom stream buffer that redirects output to OutputDebugString
 class OutputDebugStreamBuf : public std::streambuf {
@@ -93,8 +104,81 @@ struct HeosPlayer {
 	std::string pid;
 };
 
-void SendHeosCommand(const std::string& command, const std::string& params = "", const std::function<void(const std::string&)>& callback = NULL) {
+std::wstring ToWString(const std::string& str) {
+	return std::wstring(str.begin(), str.end());
+}
 
+//void ShowBalloonTip(const std::string& title, const std::string& message, int iconID) {
+//	const int BALLOON_TIMEOUT = 3000; // in milliseconds
+//
+//	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(iconID), IMAGE_ICON, 0, 0, LR_SHARED);
+//
+//	ZeroMemory(&nid, sizeof(nid));
+//	nid.cbSize = sizeof(NOTIFYICONDATA);
+//	nid.hWnd = hwndMain;
+//	nid.uID = TRAY_ICON_UID;
+//	nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
+//	nid.uCallbackMessage = WM_TRAYICON;
+//	nid.hIcon = hIcon;
+//	nid.uFlags = NIF_INFO;
+//	wcscpy_s(nid.szTip, TRAY_ICON_TOOLTIP);
+//	wcscpy_s(nid.szInfoTitle, ToWString(title).c_str());
+//	wcscpy_s(nid.szInfo, ToWString(message).c_str());
+//	nid.dwInfoFlags = NIIF_INFO; // can also use NIIF_WARNING or NIIF_ERROR
+//	nid.uTimeout = BALLOON_TIMEOUT;
+//
+//	Shell_NotifyIcon(NIM_MODIFY, &nid);
+//}
+
+
+void AddAppToStartup() {
+	WCHAR path[MAX_PATH];
+	SHGetFolderPathW(NULL, CSIDL_STARTUP, NULL, 0, path);
+
+	wcscat_s(path, L"\\HEOSController.lnk");
+
+	// Don't create if it already exists
+	if (PathFileExistsW(path)) return;
+
+	WCHAR exePath[MAX_PATH];
+	GetModuleFileNameW(NULL, exePath, MAX_PATH);
+
+	CoInitialize(NULL);
+
+	IShellLinkW* pShellLink = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pShellLink)))) {
+		pShellLink->SetPath(exePath);
+		pShellLink->SetDescription(L"HEOS Controller");
+		pShellLink->SetWorkingDirectory(L".");
+
+		IPersistFile* pPersistFile;
+		if (SUCCEEDED(pShellLink->QueryInterface(IID_PPV_ARGS(&pPersistFile)))) {
+			pPersistFile->Save(path, TRUE);
+			pPersistFile->Release();
+		}
+		pShellLink->Release();
+	}
+
+	CoUninitialize();
+}
+
+void RemoveAppFromStartup() {
+	WCHAR path[MAX_PATH];
+	SHGetFolderPathW(NULL, CSIDL_STARTUP, NULL, 0, path);
+	wcscat_s(path, L"\\HEOSController.lnk");
+
+	DeleteFileW(path);
+}
+
+bool IsStartupEnabled() {
+	WCHAR path[MAX_PATH];
+	SHGetFolderPathW(NULL, CSIDL_STARTUP, NULL, 0, path);
+	wcscat_s(path, L"\\HEOSController.lnk");
+	return PathFileExistsW(path);
+}
+
+void SendHeosCommand(const std::string& command, const std::string& params = "", const std::function<void(const std::string&)>& callback = NULL)
+{
 	std::thread([command, params, callback] {
 		if (deviceIP.length() < 4 + 3)
 		{
@@ -300,7 +384,7 @@ std::string DiscoverHEOSDevice() {
 	return "";
 }
 
-std::vector<HeosPlayer> get_heos_players(const std::string& ip) {
+std::vector<HeosPlayer> GetHeosPlayers(const std::string& ip) {
 	std::vector<HeosPlayer> players;
 	WSADATA wsaData;
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -356,6 +440,28 @@ std::vector<HeosPlayer> get_heos_players(const std::string& ip) {
 	return players;
 }
 
+void ChangeTrayIcon(int iconID) {
+	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(iconID), IMAGE_ICON, 0, 0, LR_SHARED);
+	nid.hIcon = hIcon;
+	nid.uFlags = NIF_ICON; // We're updating the icon only
+	Shell_NotifyIcon(NIM_MODIFY, &nid);
+}
+
+void GetMuteState(const std::function<void(bool)>& callback)
+{
+	SendHeosCommand("get_mute", "", [callback](const std::string& response) {
+		bool isMuted = response.find("state=on") != std::string::npos;
+		ChangeTrayIcon(isMuted ? IDI_HEOS_MUTED : IDI_HEOS);
+		if (callback) { callback(isMuted); }
+		});
+}
+
+void SetMuteState(bool muted)
+{
+	ChangeTrayIcon(muted ? IDI_HEOS_MUTED : IDI_HEOS);
+	SendHeosCommand("set_mute", muted ? "state=on" : "state=off");
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
 	std::cout.rdbuf(out.rdbuf());  // Redirect all std::cout output
@@ -369,17 +475,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
 	hwndMain = CreateWindowEx(0, L"TrayIconClass", L"Tray Icon", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
 
-	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(1), IMAGE_ICON, 0, 0, LR_SHARED);
+	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_HEOS), IMAGE_ICON, 0, 0, LR_SHARED);
 
-	NOTIFYICONDATA nid = {};
+	ZeroMemory(&nid, sizeof(nid));
 	nid.cbSize = sizeof(nid);
 	nid.hWnd = hwndMain;
-	nid.uID = 1;
+	nid.uID = TRAY_ICON_UID;
 	nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
 	nid.uCallbackMessage = WM_TRAYICON;
 	//nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
 	nid.hIcon = hIcon;
-	wcscpy_s(nid.szTip, L"HEOS Controller");
+	wcscpy_s(nid.szTip, TRAY_ICON_TOOLTIP);
 
 	Shell_NotifyIcon(NIM_ADD, &nid);
 
@@ -393,7 +499,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 		deviceName = root.get("name", "Not connected").asString();
 	}
 
+	if (!deviceIP.empty())
+	{
+		GetMuteState(NULL);
+	}
+
 	ValidateConnection();
+
+	//std::thread slackMonitorLoop(SlackMonitorLoop);
 
 	MSG msg;
 	while (GetMessage(&msg, NULL, 0, 0))
@@ -411,9 +524,12 @@ void ShowContextMenu(HWND hwnd, POINT pt)
 	HMENU hMenu = CreatePopupMenu();
 	if (!hMenu) return;
 
+	bool startupEnabled = IsStartupEnabled();
+
 	std::wstring info = isConnected ? L"Connected to " + std::wstring(deviceName.begin(), deviceName.end()) + L" (" + std::wstring(deviceIP.begin(), deviceIP.end()) + L")" : L"Not connected";
 	AppendMenu(hMenu, MF_STRING | MF_DISABLED, ID_TRAY_DEVICE_INFO, info.c_str());
 	AppendMenu(hMenu, MF_STRING, ID_TRAY_CONNECT, L"Connect!");
+	AppendMenu(hMenu, MF_STRING | (startupEnabled ? MF_CHECKED : 0), ID_TRAY_STARTUP, L"Launch on startup");
 	AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"Quit");
 
 	SetForegroundWindow(hwnd);
@@ -528,7 +644,7 @@ void ValidateConnection()
 		}
 
 		std::cout << "Discovered HEOS IP: " << ip << "\n";
-		auto players = get_heos_players(ip);
+		auto players = GetHeosPlayers(ip);
 
 		isConnected = false;
 		deviceName = "Not connected";
@@ -551,15 +667,62 @@ void ValidateConnection()
 		}
 		std::ofstream out(PREFS_FILE);
 		out << root;
+
+		GetMuteState(NULL);
 		}).detach();
 }
 
 void ToggleMute()
 {
-	SendHeosCommand("get_mute", "", [](const std::string& response) {
-		bool isMuted = response.find("state=on") != std::string::npos;
-		SendHeosCommand("set_mute", isMuted ? "state=off" : "state=on");
-		});
+	GetMuteState([](bool isMuted) { SetMuteState(!isMuted); });
+}
+
+// Check if any window title includes "Slack (Screen Sharing)"
+bool IsSlackScreenSharing() {
+	HWND hwnd = nullptr;
+	wchar_t title[512];
+	while ((hwnd = FindWindowEx(nullptr, hwnd, nullptr, nullptr)) != nullptr) {
+		if (!IsWindowVisible(hwnd)) continue;
+		GetWindowTextW(hwnd, title, 512);
+		std::wstring wTitle(title);
+		if (wTitle.find(L"Slack") != std::wstring::npos &&
+			wTitle.find(L"Screen Sharing") != std::wstring::npos) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void SlackMonitorLoop() {
+	bool wasSharing = false;
+	bool hasMuted = false;
+	while (true) {
+		bool isSharing = IsSlackScreenSharing();
+		if (isSharing && !wasSharing) {
+			std::cout << "[Slack] Detected screen sharing — muting HEOS\n";
+			GetMuteState([&hasMuted](const bool& isMuted) {
+				if (!isMuted)
+				{
+					hasMuted = true;
+					SetMuteState(true);
+				}
+			});
+		}
+		else if (!isSharing && wasSharing) {
+			std::cout << "[Slack] Screen sharing stopped — checking mute status\n";
+			if (hasMuted) {
+				std::cout << "[Slack] Unmuting HEOS\n";
+				hasMuted = false;
+				SetMuteState(false);
+			}
+			else {
+				std::cout << "[Slack] Was already muted — skipping unmute\n";
+			}
+		}
+
+		wasSharing = isSharing;
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+	}
 }
 
 static UINT_PTR clickTimerID = 0;
@@ -622,6 +785,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case ID_TRAY_CONNECT:
 			ValidateConnection();
 			break;
+		case ID_TRAY_STARTUP:
+		{
+			BOOL checked = SendMessage((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED;
+			if (checked)
+				AddAppToStartup();
+			else
+				RemoveAppFromStartup();
+		}
+		break;
 		case ID_BUTTON_PLAY:
 			SendHeosCommand("set_play_state", "state=play");
 			break;

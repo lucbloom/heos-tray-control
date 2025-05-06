@@ -10,6 +10,7 @@
 #define IDM_ABOUT				104
 #define IDM_EXIT				105
 #define IDI_HEOS 1
+#define IDI_HEOS_MUTED 106
 #define IDI_BUTTON_PLAY 108
 #define IDI_BUTTON_PAUSE 109
 #define IDI_BUTTON_MUTE 110
