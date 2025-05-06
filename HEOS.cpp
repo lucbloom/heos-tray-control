@@ -460,7 +460,7 @@ void ChangeTrayIcon(int iconID) {
 void SetMutedInternally(bool muted)
 {
 	isMuted = muted;
-	ChangeTrayIcon(isMuted ? IDI_HEOS_MUTED : IDI_HEOS);
+	ChangeTrayIcon(isMuted ? IDI_TRAY_MUTED : IDI_TRAY);
 }
 
 void GetMuteState(const std::function<void()>& callback)
@@ -532,7 +532,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
 	hwndMain = CreateWindowEx(0, L"TrayIconClass", L"Tray Icon", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
 
-	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_HEOS), IMAGE_ICON, 0, 0, LR_SHARED);
+	HICON hIcon = (HICON)LoadImage(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_TRAY), IMAGE_ICON, 0, 0, LR_SHARED);
 
 	ZeroMemory(&nid, sizeof(nid));
 	nid.cbSize = sizeof(nid);

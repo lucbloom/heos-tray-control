@@ -2,6 +2,7 @@
 // Microsoft Visual C++ generated include file.
 // Used by HEOS.rc
 
+#define IDI_APP 1
 #define IDS_APP_TITLE			103
 
 #define IDR_MAINFRAME			128
@@ -9,8 +10,8 @@
 #define IDD_ABOUTBOX			103
 #define IDM_ABOUT				104
 #define IDM_EXIT				105
-#define IDI_HEOS 1
-#define IDI_HEOS_MUTED 106
+#define IDI_TRAY 106
+#define IDI_TRAY_MUTED 107
 #define IDI_BUTTON_PLAY 108
 #define IDI_BUTTON_PAUSE 109
 #define IDI_BUTTON_MUTE 110
