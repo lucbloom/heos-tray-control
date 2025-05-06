@@ -16,6 +16,7 @@ Now with persistent preference storage and background validation of device conne
 #include <strsafe.h>
 #include <Shlwapi.h>
 
+//#include <algorithm>
 #include <string>
 #include <iostream>
 #include <vector>
@@ -39,7 +40,7 @@ Now with persistent preference storage and background validation of device conne
 #define ID_TRAY_CONNECT 1002
 #define ID_TRAY_DEVICE_INFO 1003
 #define ID_TRAY_STARTUP 1004
-#define ID_BUTTON_PLAY 2001
+#define ID_BUTTON_PLAY_PAUSE 2001
 #define ID_BUTTON_PAUSE 2002
 #define ID_BUTTON_MUTE 2003
 #define ID_BUTTON_VOL_DOWN 2004
@@ -52,6 +53,9 @@ HWND hwndMain;
 HWND hwndToolbar = NULL;
 NOTIFYICONDATA nid;
 bool isConnected = false;
+bool isMuted = false;
+//bool isPlaying = false;
+//std::string currentInput = "";
 std::string deviceName = "Not connected";
 std::string deviceIP = "";
 std::string devicePID = "";
@@ -130,6 +134,12 @@ std::wstring ToWString(const std::string& str) {
 //	Shell_NotifyIcon(NIM_MODIFY, &nid);
 //}
 
+
+std::string ToLowercase(const std::string& in) {
+	std::string out = in;
+	std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return std::tolower(c); });
+	return out;
+}
 
 void AddAppToStartup() {
 	WCHAR path[MAX_PATH];
@@ -447,19 +457,66 @@ void ChangeTrayIcon(int iconID) {
 	Shell_NotifyIcon(NIM_MODIFY, &nid);
 }
 
-void GetMuteState(const std::function<void(bool)>& callback)
+void SetMutedInternally(bool muted)
+{
+	isMuted = muted;
+	ChangeTrayIcon(isMuted ? IDI_HEOS_MUTED : IDI_HEOS);
+}
+
+void GetMuteState(const std::function<void()>& callback)
 {
 	SendHeosCommand("get_mute", "", [callback](const std::string& response) {
-		bool isMuted = response.find("state=on") != std::string::npos;
-		ChangeTrayIcon(isMuted ? IDI_HEOS_MUTED : IDI_HEOS);
-		if (callback) { callback(isMuted); }
+		SetMutedInternally(response.find("state=on") != std::string::npos);
+		if (callback) { callback(); }
 		});
 }
 
 void SetMuteState(bool muted)
 {
-	ChangeTrayIcon(muted ? IDI_HEOS_MUTED : IDI_HEOS);
+	SetMutedInternally(muted);
 	SendHeosCommand("set_mute", muted ? "state=on" : "state=off");
+}
+
+//void GetPlayState()
+//{
+//	SendHeosCommand("get_play_state", "", [](const std::string& response) {
+//		isPlaying = response.find("state=play") != std::string::npos;
+//		});
+//}
+//
+//void SetPlayState(bool play)
+//{
+//	SendHeosCommand("set_play_state", play ? "state=play" : "state=pause");
+//}
+
+//void GetInput()
+//{
+//	SendHeosCommand("get_now_playing_media", "", [](const std::string& response) {
+//		currentInput.clear();
+//
+//		try
+//		{
+//			Json::Value root;
+//			Json::CharReaderBuilder builder;
+//			std::string errs;
+//			std::istringstream s(response);
+//			if (Json::parseFromStream(builder, s, &root, &errs)) {
+//				currentInput = ToLowercase(root["payload"]["song"].asString());
+//			}
+//		}
+//		catch (...) { }
+//		});
+//}
+
+//bool IsOpticalIn()
+//{
+//	return currentInput.find("optical") != std::string::npos;
+//}
+
+void SetInput(const std::string input)
+{
+	//currentInput = input;
+	SendHeosCommand("play_input", "input=inputs/" + input);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
@@ -502,6 +559,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 	if (!deviceIP.empty())
 	{
 		GetMuteState(NULL);
+		//GetPlayState();
+		//GetInput();
 	}
 
 	ValidateConnection();
@@ -537,7 +596,9 @@ void ShowContextMenu(HWND hwnd, POINT pt)
 	DestroyMenu(hMenu);
 }
 
-#define BUTTON_COUNT 6
+#define ARRAY_LENGTH(arr) (sizeof(arr) / sizeof((arr)[0]))
+int buttonIDs[] = { ID_BUTTON_PLAY_PAUSE, ID_BUTTON_MUTE, ID_BUTTON_VOL_DOWN, ID_BUTTON_VOL_UP, ID_BUTTON_OPTICAL };
+#define BUTTON_COUNT ARRAY_LENGTH(buttonIDs)
 #define ICO_SIZE 64
 #define BUTTON_SIZE 32
 #define MARGIN 32
@@ -578,17 +639,16 @@ void ShowButtonToolbar()
 		NULL, NULL, hInst, NULL);
 
 	HWND buttons[BUTTON_COUNT];
-	int ids[] = { ID_BUTTON_PLAY, ID_BUTTON_PAUSE, ID_BUTTON_MUTE, ID_BUTTON_VOL_DOWN, ID_BUTTON_VOL_UP, ID_BUTTON_OPTICAL };
 	//LPCWSTR icons[] = { L"play.ico", L"pause.ico", L"mute.ico", L"voldown.ico", L"volup.ico", L"optical.ico" };
 
 	for (int i = 0; i < BUTTON_COUNT; ++i) {
-		int iconID = ids[i] - ID_BUTTON_PLAY + IDI_BUTTON_PLAY;
+		int iconID = buttonIDs[i] - ID_BUTTON_PLAY_PAUSE + IDI_BUTTON_PLAY;
 		//HICON hIcon = LoadButtonIcon(icons[i]);
 		HICON hIcon = LoadButtonIcon(iconID);
 		buttons[i] = CreateWindow(L"BUTTON", NULL,
 			WS_CHILD | WS_VISIBLE | BS_ICON,
 			i * BUTTON_SIZE, 0, BUTTON_SIZE, BUTTON_SIZE,
-			hwndToolbar, (HMENU)(INT_PTR)ids[i], hInst, NULL);
+			hwndToolbar, (HMENU)(INT_PTR)buttonIDs[i], hInst, NULL);
 		SendMessage(buttons[i], BM_SETIMAGE, IMAGE_ICON, (LPARAM)hIcon);
 	}
 
@@ -674,7 +734,7 @@ void ValidateConnection()
 
 void ToggleMute()
 {
-	GetMuteState([](bool isMuted) { SetMuteState(!isMuted); });
+	GetMuteState([]() { SetMuteState(!isMuted); });
 }
 
 // Check if any window title includes "Slack (Screen Sharing)"
@@ -700,7 +760,7 @@ void SlackMonitorLoop() {
 		bool isSharing = IsSlackScreenSharing();
 		if (isSharing && !wasSharing) {
 			std::cout << "[Slack] Detected screen sharing — muting HEOS\n";
-			GetMuteState([&hasMuted](const bool& isMuted) {
+			GetMuteState([&hasMuted]() {
 				if (!isMuted)
 				{
 					hasMuted = true;
@@ -749,10 +809,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			waitingForDoubleClick = false;
 
 			ToggleMute();
-			//SendHeosCommand("get_play_state", "", [](const std::string& response) {
-			//	bool isPlaying = response.find("state=play") != std::string::npos;
-			//	SendHeosCommand("set_play_state", isPlaying ? "state=pause" : "state=play");
-			//	});
 			break;
 
 		case WM_RBUTTONUP:
@@ -794,23 +850,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				RemoveAppFromStartup();
 		}
 		break;
-		case ID_BUTTON_PLAY:
-			SendHeosCommand("set_play_state", "state=play");
-			break;
-		case ID_BUTTON_PAUSE:
-			SendHeosCommand("set_play_state", "state=pause");
+		case ID_BUTTON_PLAY_PAUSE:
+			//GetInput();
+			//if (IsOpticalIn())
+			{
+				keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_EXTENDEDKEY, 0);
+			}
+			//else
+			//{
+			//	SetPlayState(!isPlaying);
+			//}
 			break;
 		case ID_BUTTON_MUTE:
 			ToggleMute();
 			break;
 		case ID_BUTTON_VOL_DOWN:
+			SetMutedInternally(false);
 			SendHeosCommand("volume_down");
 			break;
 		case ID_BUTTON_VOL_UP:
+			SetMutedInternally(false);
 			SendHeosCommand("volume_up");
 			break;
 		case ID_BUTTON_OPTICAL:
-			SendHeosCommand("play_input", "input=optical_in_1");
+			SetInput("optical_in_1");
 			break;
 		}
 		break;
